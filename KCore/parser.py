@@ -30,16 +30,16 @@ class ParseError(Exception):
 
 class ConstructionType(Enum):
     FUNCTION = 'FUNCTION'
-    FUNCTION_CALL = 'FUNCTION_CALL'
-    VARIABLE_STATEMENT = 'VARIABLE_STATEMENT'
-    VARIABLE = 'VARIABLE'
-    STRUCT = 'STRUCT'
+    FUNCTION_CALL = 'FUNCTION_CALL' # <- Завтра
+    VARIABLE_STATEMENT = 'VARIABLE_STATEMENT' # <- Завтра
+    VARIABLE = 'VARIABLE' # Сделал
+    STRUCT = 'STRUCT' # Сделал
     BLOCK = 'BLOCK'
     BLOCK_INSTRUCTION = 'BLOCK_INSTRUCTION'
     ASSEMBLY_BLOCK = 'ASSEMBLY_BLOCK'
-    KEYWORD = 'KEYWORD'
-    PREPROCESSOR = 'PREPROCESSOR'
-    UNKNOWN = 'UNKNOWN'
+    KEYWORD = 'KEYWORD' # <- Завтра
+    PREPROCESSOR = 'PREPROCESSOR' # <- позже, maybe завтра. Завтра - решение проблемы
+    UNKNOWN = 'UNKNOWN' # Сделал
 
 
 # ------------------------------------------------------------
@@ -193,34 +193,39 @@ class KParser:
 
     def recognize_instruction_construction(self) -> ConstructionType:
         construct = ConstructionType.UNKNOWN
-        if self.current_token().type == TokenType.PREPROC:
+        current_token = self.current_token()
+        if current_token.type == TokenType.PREPROC:
             construct = ConstructionType.PREPROCESSOR
-        elif self.current_token().type == TokenType.DATATYPE:
-            next_token = self.next_token()
-            if next_token.type == TokenType.IDENTIFIER:
-                next2 = self.token_on_offset(2)
-                if next2.type == TokenType.OPERATOR:
-                    construct = ConstructionType.VARIABLE
-
-                elif next2.type == TokenType.PUNCTUATION and next2.value == "(":
-                    construct = ConstructionType.FUNCTION
-        elif self.current_token().type == TokenType.KEYWORD:
-            if self.current_token().value == 'структура':
+        elif current_token.type == TokenType.KEYWORD:
+            if current_token.value == 'структура':
                 construct = ConstructionType.STRUCT
-            elif self.current_token().value == 'ассемблер':
+            elif current_token.value == 'ассемблер':
                 construct = ConstructionType.ASSEMBLY_BLOCK
-            elif self.current_token().value in ("если", "иначе", "пока", "для", "сначала", "перебрать", "выбор"):
+            elif current_token.value in ("если", "иначе", "пока", "для", "сначала", "перебрать", "выбор"):
                 construct = ConstructionType.BLOCK_INSTRUCTION
-            elif self.current_token().value in ("вернуть", "выход", "продолжить", "перейти"):
+            elif current_token.value in ("вернуть", "выход", "продолжить", "перейти"):
                 construct = ConstructionType.KEYWORD
-        elif self.current_token().type == TokenType.PUNCTUATION and self.current_token().value == "{":
+        elif current_token.type == TokenType.PUNCTUATION and current_token.value == "{":
             construct = ConstructionType.BLOCK
-        elif self.current_token().type == TokenType.IDENTIFIER:
-            if self.next_token().type == TokenType.PUNCTUATION and self.next_token().value == "(":
+        elif current_token.type in [TokenType.IDENTIFIER, TokenType.DATATYPE]:
+            next_token = self.next_token()
+            if next_token.type == TokenType.PUNCTUATION and next_token.value == "(":
                 construct = ConstructionType.FUNCTION_CALL
-            elif self.next_token().type == TokenType.OPERATOR:
+            elif next_token.type == TokenType.OPERATOR:
                 construct = ConstructionType.VARIABLE_STATEMENT
-
+            elif (next_token.type == TokenType.IDENTIFIER) or (
+                    ( current_token.type == TokenType.DATATYPE
+                      and current_token.value in ("знаковый", "беззнаковый") and
+                    next_token.type == TokenType.DATATYPE)
+            ):
+                offset2 = self.token_on_offset(2)
+                if offset2.type == TokenType.PUNCTUATION and offset2.value == "(":
+                    construct = ConstructionType.FUNCTION
+                elif (
+                        (offset2.type == TokenType.OPERATOR) or
+                        (offset2.type == TokenType.PUNCTUATION and offset2.value == ";")
+                ):
+                    construct = ConstructionType.VARIABLE
 
         return construct
 
@@ -266,7 +271,8 @@ class KParser:
         if self.current_token().type == TokenType.OPERATOR and self.current_token().value == "=":
             self.consume(expected_type=TokenType.OPERATOR, expected_value="=")
             value = self.consume_until(TokenType.PUNCTUATION, stop_value=";")
-            self.consume(expected_type=TokenType.PUNCTUATION, expected_value=";")
+
+        self.consume(expected_type=TokenType.PUNCTUATION, expected_value=";")
 
         return ASTNode(ConstructionType.VARIABLE, name=name, type=var_type, value=value)
 
@@ -280,6 +286,8 @@ class KParser:
                 return self.parse_struct()
             case ConstructionType.VARIABLE:
                 return self.parse_variable()
+            case _:
+                raise Exception("Не сделал конструкцию -> {} на {}".format(construction_type, self.current_token()))
         return ASTNode(ConstructionType.UNKNOWN)
 
     def parse(self):
