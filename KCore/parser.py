@@ -4,8 +4,6 @@
 import sys
 import pprint
 from enum import Enum
-from logging.config import IDENTIFIER
-
 from lexer import Lexer, TokenType, Token
 
 # ------------------------------------------------------------
@@ -130,6 +128,58 @@ class KParser:
             consumed.append(tok)
             self.pos += 1
         return consumed
+    
+    def _datatype_start(self, allow_reference=False) -> int:
+        """
+            Проверяет начинается ли тип, и возвращает int оффсет до конца типа,
+            или же 0 если типа не наблюдается
+        """
+        end = 0
+        start_pos = self.pos
+
+        tok1 = self.current_token()
+        if tok1.type == TokenType.DATATYPE and tok1.value in ("беззнаковый", "знаковый"):
+            end += 1
+            self.consume()
+            
+        tok2 = self.consume()
+        if tok2.type in [TokenType.DATATYPE, TokenType.IDENTIFIER]:
+            end += 1
+        else:
+            return 0
+
+        if end == 2 and (tok2.type != TokenType.DATATYPE or 
+                         (tok2.type == TokenType.DATATYPE and tok2.value in ('битфлаговый', 'логическое'))):
+            raise ParseError("Type struct/'битфлаговый'/'логическое' cannot be unsigned or signed",tok2)
+        
+        while True:
+            tok = self.current_token()
+            print("1 Token: ", tok)
+            if tok.type == TokenType.OPERATOR and tok.value == '*':
+                self.consume()
+                end += 1
+                continue
+            if tok.type == TokenType.OPERATOR and tok.value == '&':
+                if not allow_reference:
+                    raise ParseError("Reference '&' not allowed here", tok)
+                self.consume()
+                end += 1
+                # После & обычно не идут другие модификаторы (но можно и продолжить, если хотите)
+                # Поскольку & только один, после него break
+                continue  # или break, решите сами
+            if tok.type == TokenType.PUNCTUATION and tok.value == '[':
+                # Читаем всё до соответствующей ']'
+                saved_pos = self.pos
+                bracket_content = self.consume_bracket_pair()
+                end += self.pos - saved_pos
+                continue
+            # Ни один из модификаторов не подошёл – выходим
+            print("Yes, break!")
+            break
+
+        self.pos = start_pos
+        return end
+
 
     def consume_datatype(self, allow_reference=False) -> str:
         """Потребляет полное описание типа: знаковость? основной_тип ( '*' | '&'? | '[' число? ']' )*
@@ -177,6 +227,8 @@ class KParser:
             # Ни один из модификаторов не подошёл – выходим
             break
 
+
+
         return ' '.join(parts)
 
     def consume_bracket_pair(self) -> str:
@@ -207,26 +259,29 @@ class KParser:
                 construct = ConstructionType.KEYWORD
         elif current_token.type == TokenType.PUNCTUATION and current_token.value == "{":
             construct = ConstructionType.BLOCK
-        elif current_token.type in [TokenType.IDENTIFIER, TokenType.DATATYPE]:
-            next_token = self.next_token()
+        elif current_token.type == TokenType.IDENTIFIER:
+            next_token = self.token_on_offset(2)
             if next_token.type == TokenType.PUNCTUATION and next_token.value == "(":
                 construct = ConstructionType.FUNCTION_CALL
             elif next_token.type == TokenType.OPERATOR:
                 construct = ConstructionType.VARIABLE_STATEMENT
-            elif (next_token.type == TokenType.IDENTIFIER) or (
-                    ( current_token.type == TokenType.DATATYPE
-                      and current_token.value in ("знаковый", "беззнаковый") and
-                    next_token.type == TokenType.DATATYPE)
+        datatype = self._datatype_start(allow_reference=False)
+        print("Token: ", current_token, "Is_datatype_start: ", datatype) 
+        if datatype > 0:
+            saved_pos = self.pos
+            print("Token: ", current_token, "Is_datatype_start: ", datatype)
+            self.pos += datatype
+            offset2 = self.next_token()
+            print("Token: ", offset2)
+            if offset2.type == TokenType.PUNCTUATION and offset2.value == "(":
+                construct = ConstructionType.FUNCTION
+            elif (
+                (offset2.type == TokenType.OPERATOR) or
+                (offset2.type == TokenType.PUNCTUATION and offset2.value == ";")
             ):
-                offset2 = self.token_on_offset(2)
-                if offset2.type == TokenType.PUNCTUATION and offset2.value == "(":
-                    construct = ConstructionType.FUNCTION
-                elif (
-                        (offset2.type == TokenType.OPERATOR) or
-                        (offset2.type == TokenType.PUNCTUATION and offset2.value == ";")
-                ):
-                    construct = ConstructionType.VARIABLE
-
+                construct = ConstructionType.VARIABLE
+            self.pos = saved_pos
+            print("Token: ", self.current_token(), "\nConstruct: ", construct)
         return construct
 
     # ------------------------- #
