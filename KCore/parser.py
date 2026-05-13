@@ -26,19 +26,21 @@ class ParseError(Exception):
         self.token = token
         super().__init__(f"{msg} at {token.line}:{token.column}")
 
+# ------------------------------------------------------------
+# Тип конструкции
+# ------------------------------------------------------------
 class ConstructionType(Enum):
-    FUNCTION = 'FUNCTION'
+    FUNCTION = 'FUNCTION' # Сделал
     FUNCTION_CALL = 'FUNCTION_CALL' # <- Завтра
     VARIABLE_STATEMENT = 'VARIABLE_STATEMENT' # <- Завтра
     VARIABLE = 'VARIABLE' # Сделал
     STRUCT = 'STRUCT' # Сделал
-    BLOCK = 'BLOCK'
+    BLOCK = 'BLOCK' # Сделал
     BLOCK_INSTRUCTION = 'BLOCK_INSTRUCTION'
-    ASSEMBLY_BLOCK = 'ASSEMBLY_BLOCK'
-    KEYWORD = 'KEYWORD' # <- Завтра
+    ASSEMBLY_BLOCK = 'ASSEMBLY_BLOCK' # Сделал, не сделал встроенный ассемблер только (не как вставка)
+    KEYWORD = 'KEYWORD' # Сделал
     PREPROCESSOR = 'PREPROCESSOR' # <- позже, maybe завтра. Завтра - решение проблемы
     UNKNOWN = 'UNKNOWN' # Сделал
-
 
 # ------------------------------------------------------------
 # Парсер
@@ -106,7 +108,7 @@ class KParser:
         new_token = self.current_token()
         if new_token is None:
             raise ParseError("Unexpected EOF", prev_token)
-        return new_token
+        return prev_token
 
     def consume_until(self, stop_type, stop_value=None) -> list[Token]:
         """
@@ -128,58 +130,45 @@ class KParser:
             consumed.append(tok)
             self.pos += 1
         return consumed
-    
+
     def _datatype_start(self, allow_reference=False) -> int:
-        """
-            Проверяет начинается ли тип, и возвращает int оффсет до конца типа,
-            или же 0 если типа не наблюдается
-        """
-        end = 0
-        start_pos = self.pos
-
-        tok1 = self.current_token()
-        if tok1.type == TokenType.DATATYPE and tok1.value in ("беззнаковый", "знаковый"):
-            end += 1
-            self.consume()
-            
-        tok2 = self.consume()
-        if tok2.type in [TokenType.DATATYPE, TokenType.IDENTIFIER]:
-            end += 1
-        else:
+        offset = 0
+        # знаковость?
+        tok = self.token_on_offset(offset)
+        if tok.type == TokenType.DATATYPE and tok.value in ("беззнаковый", "знаковый"):
+            offset += 1
+            tok = self.token_on_offset(offset)
+        # основной тип (обязателен)
+        if tok.type not in (TokenType.DATATYPE, TokenType.IDENTIFIER):
             return 0
-
-        if end == 2 and (tok2.type != TokenType.DATATYPE or 
-                         (tok2.type == TokenType.DATATYPE and tok2.value in ('битфлаговый', 'логическое'))):
-            raise ParseError("Type struct/'битфлаговый'/'логическое' cannot be unsigned or signed",tok2)
-        
+        offset += 1
+        # модификаторы: *, &, [ ... ]
         while True:
-            tok = self.current_token()
-            print("1 Token: ", tok)
+            tok = self.token_on_offset(offset)
             if tok.type == TokenType.OPERATOR and tok.value == '*':
-                self.consume()
-                end += 1
+                offset += 1
                 continue
             if tok.type == TokenType.OPERATOR and tok.value == '&':
                 if not allow_reference:
-                    raise ParseError("Reference '&' not allowed here", tok)
-                self.consume()
-                end += 1
-                # После & обычно не идут другие модификаторы (но можно и продолжить, если хотите)
-                # Поскольку & только один, после него break
-                continue  # или break, решите сами
-            if tok.type == TokenType.PUNCTUATION and tok.value == '[':
-                # Читаем всё до соответствующей ']'
-                saved_pos = self.pos
-                bracket_content = self.consume_bracket_pair()
-                end += self.pos - saved_pos
+                    return 0  # или break, в зависимости от грамматики
+                offset += 1
                 continue
-            # Ни один из модификаторов не подошёл – выходим
-            print("Yes, break!")
+            if tok.type == TokenType.PUNCTUATION and tok.value == '[':
+                offset += 1  # пропускаем '['
+                depth = 1
+                while depth > 0:
+                    ntok = self.token_on_offset(offset)
+                    if ntok.type == TokenType.PUNCTUATION:
+                        if ntok.value == '[':
+                            depth += 1
+                        elif ntok.value == ']':
+                            depth -= 1
+                    offset += 1
+                    if offset > len(self.tokens):
+                        return 0  # незакрытая скобка
+                continue
             break
-
-        self.pos = start_pos
-        return end
-
+        return offset
 
     def consume_datatype(self, allow_reference=False) -> str:
         """Потребляет полное описание типа: знаковость? основной_тип ( '*' | '&'? | '[' число? ']' )*
@@ -285,21 +274,21 @@ class KParser:
         return construct
 
     # ------------------------- #
-    #        НЕ ДОДЕЛАНО!       #
+    #     v НЕ ДОДЕЛАНО! v      #
     # ------------------------- #
     def parse_preproc(self) -> ASTNode:
         self.consume(expected_type=TokenType.PREPROC)
         name = self.consume(expected_type=TokenType.IDENTIFIER).value
         node = ASTNode(ConstructionType.PREPROCESSOR)
+        return node
 
     def parse_struct(self) -> ASTNode:
         self.consume(expected_type=TokenType.KEYWORD)
-        struct_name = self.consume().value
+        struct_name = self.consume(expected_type=TokenType.IDENTIFIER).value
         self.consume(expected_type=TokenType.PUNCTUATION, expected_value="{")
         struct_params = []
         while True:
             param_type = self.consume_datatype()
-            print(param_type)
 
             param_name = self.consume(expected_type=TokenType.IDENTIFIER).value
 
@@ -331,6 +320,60 @@ class KParser:
 
         return ASTNode(ConstructionType.VARIABLE, name=name, type=var_type, value=value)
 
+    def consume_block(self) -> list[ASTNode]:
+        ast_list = []
+        self.consume(expected_type=TokenType.PUNCTUATION, expected_value="{")
+        while True:
+            if self.current_token().type == TokenType.PUNCTUATION and self.current_token().value == "}":
+                self.consume(expected_type=TokenType.PUNCTUATION, expected_value="}")
+                break
+            construction_type = self.recognize_instruction_construction()
+            ast_list.append(self.parse_instruction(construction_type))
+        return ast_list
+
+    def parse_block(self) -> ASTNode:
+        block = self.consume_block()
+        return ASTNode(ConstructionType.BLOCK, code=block)
+
+    def parse_function(self) -> ASTNode:
+        datatype = self.consume_datatype()
+        name = self.consume(expected_type=TokenType.IDENTIFIER).value
+        self.consume(expected_type=TokenType.PUNCTUATION, expected_value="(")
+        parameters = {}
+        while True:
+            param_type = self.consume_datatype(allow_reference=True)
+            param_name = self.consume(expected_type=TokenType.IDENTIFIER).value
+            parameters[param_name] = param_type
+            if self.current_token().type == TokenType.PUNCTUATION and self.current_token().value == ")":
+                self.consume(expected_type=TokenType.PUNCTUATION, expected_value=")")
+                break
+            else:
+                print("token: {}?".format(self.current_token()))
+                self.consume(expected_type=TokenType.PUNCTUATION, expected_value=",")
+
+        block = self.consume_block()
+
+        return ASTNode(ConstructionType.FUNCTION, return_datatype=datatype, name=name, parameters=parameters, code=block)
+
+    def parse_assembly_block(self) -> ASTNode:
+        self.consume(expected_type=TokenType.KEYWORD, expected_value="ассемблер")
+        block = self.consume_until(TokenType.PUNCTUATION, stop_value="}")
+        return ASTNode(ConstructionType.ASSEMBLY_BLOCK, assembly=block)
+
+    def parse_keyword(self) -> ASTNode:
+        keyword = self.consume(expected_type=TokenType.KEYWORD).value
+        arg = None
+        if keyword in ("вернуть", "перейти"):
+            arg = self.consume()
+        return ASTNode(ConstructionType.KEYWORD, keyword=keyword, arg=arg)
+
+    def parse_function_call(self):
+        func_name = self.consume(expected_type=TokenType.IDENTIFIER).value
+        self.consume(expected_type=TokenType.PUNCTUATION, expected_value="(")
+        args = self.consume_until(TokenType.PUNCTUATION, stop_value=")")
+        self.consume(expected_type=TokenType.PUNCTUATION, expected_value=";")
+        return ASTNode(ConstructionType.FUNCTION, func_name=func_name, args=args)
+
     def parse_instruction(self, construction_type) -> ASTNode:
         match construction_type:
             case ConstructionType.UNKNOWN:
@@ -341,9 +384,16 @@ class KParser:
                 return self.parse_struct()
             case ConstructionType.VARIABLE:
                 return self.parse_variable()
+            case ConstructionType.FUNCTION:
+                return self.parse_function()
+            case ConstructionType.ASSEMBLY_BLOCK:
+                return self.parse_assembly_block()
+            case ConstructionType.KEYWORD:
+                return self.parse_keyword()
+            case ConstructionType.BLOCK:
+                return self.parse_block()
             case _:
                 raise Exception("Не сделал конструкцию -> {} на {}".format(construction_type, self.current_token()))
-        return ASTNode(ConstructionType.UNKNOWN)
 
     def parse(self):
         self.parsing = True
